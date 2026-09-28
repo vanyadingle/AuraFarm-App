@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.env
+venv/
+env/
+
+# Build & Dist
+build/
+dist/
+*.spec
+
+# Temporary runtime capture & cache
+AuraFarm_Captures/
+CapCut_Edits_Input/
+temp_aura_cache/
+assets/greenscreen_samples/
+assets/greenscreen_tests/
+assets/tiktok_frames/
+assets/tiktok_crops/
+assets/test_composites/
+assets/samples/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
