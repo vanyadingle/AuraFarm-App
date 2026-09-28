@@ -4,7 +4,7 @@ import numpy as np
 import math
 
 class PhonkEditEngine:
-    """Dynamic Phonk Edit & Chroma Key Compositor Engine."""
+    """Dynamic Phonk Edit, Chroma Key & Video Cut Compositor Engine."""
     def __init__(self, assets_dir=None):
         if assets_dir is None:
             assets_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
@@ -12,6 +12,7 @@ class PhonkEditEngine:
         self.audio_dir = os.path.join(assets_dir, "audio")
         self.skulls_dir = os.path.join(assets_dir, "skulls")
         self.greenscreen_dir = os.path.join(assets_dir, "greenscreen_templates")
+        self.hair_edit_dir = os.path.join(assets_dir, "hair_edit")
         
         # Load user-provided skulls
         self.skulls = {}
@@ -30,13 +31,29 @@ class PhonkEditEngine:
                     
         self.skull_keys = list(self.skulls.keys()) if self.skulls else []
         
-        # Video capture cache for green screen templates
+        # Video capture cache for template videos
         self.video_caps = {}
         
-        # Define Template Library (Chroma Key + Dynamic User Media)
+        # Cut timestamps for Hair Beat Edit (extracted from original TikTok video)
+        self.hair_cuts = [
+            4.53, 5.20, 5.53, 5.97, 6.20, 6.47, 6.63, 7.07,
+            7.47, 7.93, 8.43, 8.90, 9.40, 9.83, 10.07, 10.40, 10.73
+        ]
+        
+        # Define Template Library
         self.templates = [
             {
                 "id": 1,
+                "name": "Hair Intro vs Brazilian Phonk Cut",
+                "type": "hair_edit",
+                "video": os.path.join(self.hair_edit_dir, "hair_edit_orig.mp4"),
+                "audio": os.path.join(self.audio_dir, "hair_edit_audio.wav"),
+                "duration": 10.7,
+                "required_slots": 8,
+                "intro_cut": 4.53
+            },
+            {
+                "id": 2,
                 "name": "Greenscreen Brazilian Phonk 1",
                 "type": "greenscreen",
                 "video": os.path.join(self.greenscreen_dir, "template_1.mp4"),
@@ -46,7 +63,7 @@ class PhonkEditEngine:
                 "beat_dur": 0.435
             },
             {
-                "id": 2,
+                "id": 3,
                 "name": "Greenscreen Brazilian Phonk 2",
                 "type": "greenscreen",
                 "video": os.path.join(self.greenscreen_dir, "template_2.mp4"),
@@ -56,7 +73,7 @@ class PhonkEditEngine:
                 "beat_dur": 0.42
             },
             {
-                "id": 3,
+                "id": 4,
                 "name": "Greenscreen Skull Freezeframe 3",
                 "type": "greenscreen",
                 "video": os.path.join(self.greenscreen_dir, "template_3.mp4"),
@@ -66,7 +83,7 @@ class PhonkEditEngine:
                 "beat_dur": 0.45
             },
             {
-                "id": 4,
+                "id": 5,
                 "name": "Greenscreen Funk Sigilo 5",
                 "type": "greenscreen",
                 "video": os.path.join(self.greenscreen_dir, "template_5.mp4"),
@@ -76,7 +93,7 @@ class PhonkEditEngine:
                 "beat_dur": 0.422
             },
             {
-                "id": 5,
+                "id": 6,
                 "name": "Greenscreen Phonk Master 6",
                 "type": "greenscreen",
                 "video": os.path.join(self.greenscreen_dir, "template_6.mp4"),
@@ -86,7 +103,7 @@ class PhonkEditEngine:
                 "beat_dur": 0.40
             },
             {
-                "id": 6,
+                "id": 7,
                 "name": "Multi-Skull 4X Trend Mix",
                 "type": "procedural",
                 "audio": os.path.join(self.audio_dir, "capcut_audio_4.wav"),
@@ -103,7 +120,7 @@ class PhonkEditEngine:
         return tmpl
 
     def get_template_video_frame(self, video_path, elapsed_time, target_size=(280, 360)):
-        """Fast thread-safe random access frame reader for template videos."""
+        """Fast random access frame reader for template videos."""
         if not os.path.exists(video_path):
             return None
             
@@ -206,38 +223,94 @@ class PhonkEditEngine:
         canvas[cy1:cy2, cx1:cx2] = blended
         return canvas
 
+    def render_hair_beat_edit(self, tmpl, elapsed, snapshots, video_frames=None, target_size=(280, 360)):
+        """Hair scene intro (0-4.53s) -> Identical beat cuts with user's photos and video clips (4.53s+)."""
+        tw, th = target_size
+        intro_cut = tmpl.get("intro_cut", 4.53)
+        
+        # 1. Intro segment: Original video with hair scene
+        if elapsed < intro_cut:
+            intro_frame = self.get_template_video_frame(tmpl["video"], elapsed, target_size=target_size)
+            if intro_frame is not None:
+                # White flash ramp right before the beat drop
+                if elapsed > (intro_cut - 0.15):
+                    flash_val = int(((elapsed - (intro_cut - 0.15)) / 0.15) * 220)
+                    intro_frame = cv2.add(intro_frame, np.full_like(intro_frame, flash_val))
+                return intro_frame
+            return np.zeros((th, tw, 3), dtype=np.uint8)
+            
+        # 2. Beat Cut Segment: Identical beat transitions replaced with user's media
+        # Find which cut segment we are in
+        seg_idx = 0
+        seg_start = intro_cut
+        seg_end = self.hair_cuts[-1]
+        
+        for i in range(len(self.hair_cuts) - 1):
+            if self.hair_cuts[i] <= elapsed < self.hair_cuts[i+1]:
+                seg_idx = i
+                seg_start = self.hair_cuts[i]
+                seg_end = self.hair_cuts[i+1]
+                break
+                
+        seg_dur = max(0.08, seg_end - seg_start)
+        seg_rel = elapsed - seg_start
+        beat_prog = min(1.0, max(0.0, seg_rel / seg_dur))
+        punch = math.exp(-beat_prog * 5.0)
+        
+        # Alternate between captured photos and live video frames
+        num_snaps = max(1, len(snapshots))
+        photo_idx = seg_idx % num_snaps
+        
+        if video_frames and len(video_frames) > 0 and (seg_idx % 3 == 1):
+            vf_idx = int(elapsed * 30.0) % len(video_frames)
+            curr_media = video_frames[vf_idx]
+        else:
+            curr_media = snapshots[photo_idx]
+            
+        if curr_media.shape[:2] != (th, tw):
+            curr_media = cv2.resize(curr_media, (tw, th))
+            
+        # Velocity zoom punch + cinematic tone
+        frame = (curr_media.copy().astype(float) * 0.85).astype(np.uint8)
+        zoom = 1.05 + 0.18 * punch
+        frame = self.apply_zoom_crop(frame, zoom)
+        
+        # RGB split on heavy kick cuts
+        if punch > 0.35:
+            frame = self.apply_rgb_split(frame, offset_x=int(punch * 7))
+            
+        # Flash transition on segment start
+        if seg_rel < 0.10:
+            flash_val = int((1.0 - seg_rel / 0.10) * 160)
+            frame = cv2.add(frame, np.full_like(frame, flash_val))
+            
+        return frame
+
     def render_chroma_key_frame(self, tmpl, elapsed, snapshots, video_frames=None, target_size=(280, 360)):
         """Composite user media (video buffer + photos) under the green screen template."""
         tw, th = target_size
         
-        # 1. Get current template frame
         tmpl_frame = self.get_template_video_frame(tmpl["video"], elapsed, target_size=target_size)
         if tmpl_frame is None:
             tmpl_frame = np.zeros((th, tw, 3), dtype=np.uint8)
             
-        # 2. Select background user media (video clip or photo)
         beat_dur = tmpl.get("beat_dur", 0.435)
         num_snaps = max(1, len(snapshots))
         slot_idx = int(elapsed / beat_dur) % num_snaps
         
-        # Beat animation physics
         beat_pos = (elapsed % beat_dur) / beat_dur
         punch = math.exp(-beat_pos * 5.0)
         
-        # Determine whether to use moving live video frame or photo
         if video_frames and len(video_frames) > 0 and (int(elapsed / 2.0) % 2 == 0):
-            # Play live moving video frame buffer
             vf_idx = int(elapsed * 30.0) % len(video_frames)
             user_base = video_frames[vf_idx]
             if user_base.shape[:2] != (th, tw):
                 user_base = cv2.resize(user_base, (tw, th))
         else:
-            # Use high-res captured photo
             user_base = snapshots[slot_idx]
             if user_base.shape[:2] != (th, tw):
                 user_base = cv2.resize(user_base, (tw, th))
                 
-        # Subtle cinematic contrast & beat zoom on background
         user_bg = (user_base.copy().astype(float) * 0.70).astype(np.uint8)
         zoom = 1.04 + 0.12 * punch
         user_bg = self.apply_zoom_crop(user_bg, zoom)
@@ -245,19 +318,14 @@ class PhonkEditEngine:
         if punch > 0.4:
             user_bg = self.apply_rgb_split(user_bg, offset_x=int(punch * 6))
             
-        # 3. Chroma Key Segmentation (Green screen detection & alpha blending)
         hsv = cv2.cvtColor(tmpl_frame, cv2.COLOR_BGR2HSV)
         green_mask = cv2.inRange(hsv, np.array([35, 60, 60]), np.array([85, 255, 255]))
-        
-        # Calculate green coverage percentage
         green_pct = (green_mask > 0).mean()
         
         if green_pct > 0.05:
-            # Foreground mask: 0 where green (show user background), 1 where foreground
             fg_alpha = (cv2.bitwise_not(green_mask).astype(float) / 255.0)
             fg_alpha = cv2.GaussianBlur(fg_alpha, (3, 3), 0)[:, :, np.newaxis]
             
-            # De-spill green fringe on template foreground
             b, g, r = cv2.split(tmpl_frame)
             max_rb = np.maximum(r, b)
             g_clean = np.where(g > max_rb, max_rb, g)
@@ -266,7 +334,6 @@ class PhonkEditEngine:
             composite = (fg_clean * fg_alpha + user_bg.astype(float) * (1.0 - fg_alpha)).astype(np.uint8)
             return composite
         else:
-            # Fullscreen template animation / transition
             return tmpl_frame
 
     def render_procedural_frame(self, tmpl, elapsed, snapshots, video_frames=None, target_size=(280, 360)):
@@ -291,7 +358,6 @@ class PhonkEditEngine:
         zoom = 1.04 + 0.18 * punch
         frame = self.apply_zoom_crop(frame, zoom)
         
-        # Cycle across all 4 user skulls
         skull_order = ["3d", "smoke", "real", "sigma"]
         beat_idx = int(elapsed / beat_dur) % len(skull_order)
         skull_name = skull_order[beat_idx]
@@ -308,7 +374,10 @@ class PhonkEditEngine:
         if not snapshots and not video_frames:
             return np.zeros((target_size[1], target_size[0], 3), dtype=np.uint8)
             
-        if template.get("type") == "greenscreen":
+        ttype = template.get("type")
+        if ttype == "hair_edit":
+            return self.render_hair_beat_edit(template, elapsed_time, snapshots, video_frames, target_size)
+        elif ttype == "greenscreen":
             return self.render_chroma_key_frame(template, elapsed_time, snapshots, video_frames, target_size)
         else:
             return self.render_procedural_frame(template, elapsed_time, snapshots, video_frames, target_size)
